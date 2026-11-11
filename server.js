@@ -10,7 +10,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const FETCH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 function buildPool() {
-  const connectionString = process.env.DATABASE_URL;
+  let connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
     throw new Error('DATABASE_URL environment variable is required');
   }
@@ -18,9 +18,22 @@ function buildPool() {
     process.env.DATABASE_CA_CERT ||
     process.env.PG_CA_CERT ||
     process.env.PGSSLROOTCERT_CONTENT;
+
+  // Avoid conflicts between ssl params in the URL and explicit ssl config.
+  try {
+    const u = new URL(connectionString);
+    u.searchParams.delete('sslmode');
+    u.searchParams.delete('sslrootcert');
+    u.searchParams.delete('sslcert');
+    u.searchParams.delete('sslkey');
+    connectionString = u.toString();
+  } catch (_) {}
+
+  const rejectUnauthorized = process.env.DATABASE_SSL_REJECT_UNAUTHORIZED === 'true';
   const ssl = ca
-    ? { ca, rejectUnauthorized: true }
-    : { rejectUnauthorized: false };
+    ? { ca, rejectUnauthorized }
+    : { rejectUnauthorized };
+
   return new Pool({ connectionString, ssl });
 }
 
