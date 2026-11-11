@@ -46,6 +46,7 @@
     previewOpenTab: document.getElementById('previewOpenTab'),
     previewCopy: document.getElementById('previewCopy'),
     previewFrame: document.getElementById('previewFrame'),
+    previewEmbed: document.getElementById('previewEmbed'),
   };
 
   const sourceTypeMeta = {
@@ -433,6 +434,32 @@
 
   let currentPreviewLink = '';
 
+  function parseTelegramPost(link) {
+    try {
+      const u = new URL(link);
+      if (u.hostname !== 't.me' && u.hostname !== 'telegram.me' && u.hostname !== 'www.t.me') return null;
+      const parts = u.pathname.split('/').filter(Boolean);
+      // expect /<channel>/<postId> (public post). ignore /s/<channel> pages etc.
+      if (parts.length >= 2 && parts[0] !== 's' && /^\d+$/.test(parts[1])) {
+        return `${parts[0]}/${parts[1]}`;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  function clearPreviewContent() {
+    if (els.previewFrame) {
+      els.previewFrame.src = 'about:blank';
+      els.previewFrame.classList.remove('hidden');
+    }
+    if (els.previewEmbed) {
+      els.previewEmbed.innerHTML = '';
+      els.previewEmbed.classList.add('hidden');
+    }
+  }
+
   function openPreview(item) {
     if (!item || !item.link) return;
     currentPreviewLink = item.link;
@@ -444,10 +471,28 @@
     els.previewSource.textContent = sourceText;
     els.previewUrl.textContent = item.link;
     els.previewUrl.title = item.link;
-    // Load in iframe inside popup modal so user can view; some sites may block embedding.
-    els.previewFrame.src = 'about:blank';
-    // Small defer helps some browsers reset iframe state between items
-    setTimeout(() => { if (currentPreviewLink === item.link) els.previewFrame.src = item.link; }, 0);
+
+    clearPreviewContent();
+
+    const tgPost = parseTelegramPost(item.link);
+    if (tgPost && els.previewEmbed) {
+      // Render Telegram post via official widget (t.me pages block plain iframes)
+      els.previewFrame.classList.add('hidden');
+      els.previewEmbed.classList.remove('hidden');
+      const script = document.createElement('script');
+      script.async = true;
+      script.src = 'https://telegram.org/js/telegram-widget.js?22';
+      script.setAttribute('data-telegram-post', tgPost);
+      script.setAttribute('data-width', '100%');
+      script.setAttribute('data-dark', '1');
+      els.previewEmbed.appendChild(script);
+    } else {
+      // Default: load in iframe. Some sites may block embedding (X-Frame-Options/CSP).
+      els.previewFrame.classList.remove('hidden');
+      if (els.previewEmbed) els.previewEmbed.classList.add('hidden');
+      const link = item.link;
+      setTimeout(() => { if (currentPreviewLink === link) els.previewFrame.src = link; }, 0);
+    }
 
     els.previewBackdrop.classList.remove('hidden');
     els.previewBackdrop.setAttribute('aria-hidden', 'false');
@@ -456,7 +501,7 @@
   function closePreview() {
     els.previewBackdrop.classList.add('hidden');
     els.previewBackdrop.setAttribute('aria-hidden', 'true');
-    els.previewFrame.src = 'about:blank';
+    clearPreviewContent();
     currentPreviewLink = '';
   }
 
