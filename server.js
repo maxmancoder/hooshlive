@@ -74,6 +74,15 @@ async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_news_source ON news(source_id);
     CREATE INDEX IF NOT EXISTS idx_news_pinned ON news(pinned);
     CREATE INDEX IF NOT EXISTS idx_news_sort ON news ((COALESCE(published_at, fetched_at)) DESC, id DESC);
+
+    CREATE TABLE IF NOT EXISTS news_reads (
+      user_key TEXT NOT NULL,
+      news_id INTEGER NOT NULL REFERENCES news(id) ON DELETE CASCADE,
+      read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (user_key, news_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_news_reads_user ON news_reads(user_key);
+    CREATE INDEX IF NOT EXISTS idx_news_reads_news ON news_reads(news_id);
   `);
   await pool.query(
     "ALTER TABLE folders ADD COLUMN IF NOT EXISTS source_ids TEXT NOT NULL DEFAULT '[]'"
@@ -219,6 +228,48 @@ async function fetchText(url, timeoutMs = 30000) {
   } finally {
     clearTimeout(t);
   }
+}
+
+async function fetchUrlForPreview(targetUrl, timeoutMs = 25000) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(targetUrl, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7',
+      },
+      redirect: 'follow',
+    });
+    const contentType = res.headers.get('content-type') || 'application/octet-stream';
+    const buf = Buffer.from(await res.arrayBuffer());
+    return { status: res.status, ok: res.ok, contentType, buf, finalUrl: res.url || targetUrl };
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function injectBaseHref(html, baseUrl) {
+  const safeBase = String(baseUrl || '').replace(/"/g, '&quot;');
+  const baseTag = `<base href="${safeBase}">`;
+  if (/<base\b/i.test(html)) {
+    // replace existing base href
+    return html.replace(/<base\b[^>]*>/i, baseTag);
+  }
+  if (/<head\b[^>]*>/i.test(html)) {
+    return html.replace(/<head\b[^>]*>/i, (m) => m + baseTag);
+  }
+  if (/<html\b[^>]*>/i.test(html)) {
+    return html.replace(/<html\b[^>]*>/i, (m) => m + `<head>${baseTag}</head>`);
+  }
+  return `<head>${baseTag}</head>` + html;
+}
+
+function sanitizePreviewHtml(html) {
+  // Remove meta CSP that can break proxied rendering; we serve from our origin
+  return html.replace(/<meta\b[^>]*http-equiv=["']?Content-Security-Policy["']?[^>]*>/ig, '');
 }
 
 function normalizeTelegramUsername(input) {
@@ -596,6 +647,7 @@ async function queryNews(params) {
   const pinnedOnly = params.pinned === '1' || params.pinned === 'true';
   const folderId = params.folder_id ? parseInt(params.folder_id, 10) : null;
   const search = String(params.q || '').trim().toLowerCase();
+  const userKey = String(params.user || '').trim().slice(0, 100);
 
   let folder = null;
   if (folderId) {
@@ -642,15 +694,28 @@ async function queryNews(params) {
   }
 
   const sortParam = String(params.sort || params.order || 'desc').toLowerCase();
-  const asc = sortParam === 'asc' || sortParam === 'oldest' || sortParam === 'old';
-  const orderSql = asc
-    ? 'ORDER BY COALESCE(n.published_at, n.fetched_at) ASC, n.id ASC'
-    : 'ORDER BY COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC';
+  const dateAsc = sortParam === 'asc' || sortParam === 'oldest' || sortParam === 'old';
+  let orderSql;
+  if (sortParam === 'unread' || sortParam === 'unread_first') {
+    orderSql = 'ORDER BY (CASE WHEN nr.news_id IS NULL THEN 0 ELSE 1 END) ASC, COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC';
+  } else if (sortParam === 'read' || sortParam === 'read_first') {
+    orderSql = 'ORDER BY (CASE WHEN nr.news_id IS NULL THEN 1 ELSE 0 END) ASC, COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC';
+  } else if (dateAsc) {
+    orderSql = 'ORDER BY COALESCE(n.published_at, n.fetched_at) ASC, n.id ASC';
+  } else {
+    orderSql = 'ORDER BY COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC';
+  }
+
+  const readsJoin = userKey
+    ? `LEFT JOIN news_reads nr ON nr.news_id = n.id AND nr.user_key = ${add(userKey)}`
+    : `LEFT JOIN (SELECT NULL::int AS news_id) nr ON FALSE`;
+  const readSelect = userKey ? ', (nr.news_id IS NOT NULL) AS is_read' : ', FALSE AS is_read';
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const baseSql = `
     FROM news n
     LEFT JOIN sources s ON s.id = n.source_id
+    ${readsJoin}
     ${whereSql}
   `;
 
@@ -666,6 +731,7 @@ async function queryNews(params) {
        n.id, n.source_id, n.title, n.link, n.published_at, n.fetched_at, n.pinned,
        COALESCE(NULLIF(n.source_name, ''), s.name) AS source_name,
        COALESCE(NULLIF(n.source_type, ''), s.type) AS source_type
+       ${readSelect}
      ${baseSql}
      ${orderSql}
      LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
@@ -765,6 +831,67 @@ async function handleApi(req, res, urlObj) {
       `);
       const r = rows[0] || {};
       return sendJson(res, 200, { all: r.all_count || 0, pinned: r.pinned_count || 0 });
+    }
+
+    if (method === 'GET' && pathname === '/api/preview') {
+      const target = String(searchParams.get('url') || '').trim();
+      if (!target) return sendText(res, 400, 'Missing url', 'text/plain; charset=utf-8');
+      let parsed;
+      try { parsed = new URL(target); } catch { return sendText(res, 400, 'Invalid url', 'text/plain; charset=utf-8'); }
+      if (!['http:', 'https:'].includes(parsed.protocol)) {
+        return sendText(res, 400, 'Only http/https URLs are allowed', 'text/plain; charset=utf-8');
+      }
+      const host = (parsed.hostname || '').toLowerCase();
+      if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.local')) {
+        return sendText(res, 400, 'Target host is not allowed', 'text/plain; charset=utf-8');
+      }
+      try {
+        const out = await fetchUrlForPreview(target);
+        const ct = String(out.contentType || '').toLowerCase();
+        const isHtml = ct.includes('text/html') || ct.includes('application/xhtml+xml');
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        // Intentionally do not set X-Frame-Options/CSP frame-ancestors; we need to display in our own modal iframe
+        if (isHtml) {
+          let html = out.buf.toString('utf8');
+          html = sanitizePreviewHtml(html);
+          html = injectBaseHref(html, out.finalUrl || target);
+          const ctHeader = out.contentType && /charset=/i.test(out.contentType) ? out.contentType : 'text/html; charset=utf-8';
+          res.writeHead(out.ok ? 200 : 502, { 'Content-Type': ctHeader });
+          return res.end(html);
+        } else {
+          res.writeHead(out.ok ? 200 : 502, { 'Content-Type': out.contentType || 'application/octet-stream' });
+          return res.end(out.buf);
+        }
+      } catch (e) {
+        const msg = e && e.message ? e.message : String(e);
+        return sendText(res, 502, 'Preview fetch failed: ' + msg, 'text/plain; charset=utf-8');
+      }
+    }
+
+    if (method === 'GET' && pathname === '/api/reads') {
+      const user = String(searchParams.get('user') || '').trim().slice(0, 100);
+      if (!user) return sendJson(res, 400, { error: 'user is required' });
+      const { rows } = await pool.query('SELECT news_id FROM news_reads WHERE user_key = $1', [user]);
+      return sendJson(res, 200, { user, ids: rows.map(r => r.news_id) });
+    }
+
+    if (method === 'POST' && pathname === '/api/reads') {
+      const body = await readJson(req);
+      const user = String(body.user || '').trim().slice(0, 100);
+      if (!user) return sendJson(res, 400, { error: 'user is required' });
+      let ids = [];
+      if (Array.isArray(body.news_ids)) ids = body.news_ids;
+      else if (body.news_id != null) ids = [body.news_id];
+      const uniqueIds = [...new Set(ids.map(x => parseInt(x, 10)).filter(x => Number.isInteger(x) && x > 0))];
+      if (!uniqueIds.length) return sendJson(res, 200, { ok: true, added: 0 });
+      const result = await pool.query(
+        `INSERT INTO news_reads (user_key, news_id)
+         SELECT $1, UNNEST($2::int[])
+         ON CONFLICT (user_key, news_id) DO NOTHING`,
+        [user, uniqueIds]
+      );
+      return sendJson(res, 200, { ok: true, added: result.rowCount || 0 });
     }
 
     if (method === 'POST' && /^\/api\/news\/\d+\/pin$/.test(pathname)) {

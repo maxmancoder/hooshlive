@@ -21,6 +21,11 @@
         </div>
       </div>
       <div class="topbar-actions">
+        <div class="user-control" title="وضعیت خوانده‌شده‌ها برای هر کاربر جداگانه ذخیره می‌شود">
+          <label for="currentUserInput" class="user-label">کاربر</label>
+          <input id="currentUserInput" class="user-input" type="text" placeholder="نام کاربر" maxlength="50" />
+          <button id="setUserBtn" class="btn btn-secondary btn-small" type="button">ثبت</button>
+        </div>
         <button id="refreshBtn" class="btn btn-secondary" type="button" title="دریافت خبرهای جدید">
           <span class="btn-icon">↻</span>
           <span>به‌روزرسانی خبرها</span>
@@ -97,6 +102,8 @@
             <select id="sortSelect" class="sort-select" title="مرتب‌سازی">
               <option value="desc">جدید به قدیم</option>
               <option value="asc">قدیم به جدید</option>
+              <option value="unread">خوانده‌نشده‌ها ابتدا</option>
+              <option value="read">خوانده‌شده‌ها ابتدا</option>
             </select>
           </div>
         </div>

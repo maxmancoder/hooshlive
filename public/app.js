@@ -12,6 +12,8 @@
 
   const els = {
     refreshBtn: document.getElementById('refreshBtn'),
+    currentUserInput: document.getElementById('currentUserInput'),
+    setUserBtn: document.getElementById('setUserBtn'),
     sourceForm: document.getElementById('sourceForm'),
     sourceType: document.getElementById('sourceType'),
     sourceName: document.getElementById('sourceName'),
@@ -53,30 +55,47 @@
     previewNotice: document.getElementById('previewNotice'),
   };
 
-  const READ_STORAGE_KEY = 'hooshlive_read_news_v1';
+  const USER_STORAGE_KEY = 'hooshlive_user_key';
+  let currentUser = '';
   let readMap = {};
-  let readSaveTimer = null;
   let readObserver = null;
+  let pendingReadIds = new Set();
+  let readFlushTimer = null;
+  let readFlushing = false;
 
-  function loadReadMap() {
+  function normalizeUserKey(name) {
+    return String(name || '').trim().slice(0, 50);
+  }
+
+  function loadCurrentUser() {
+    let u = normalizeUserKey(localStorage.getItem(USER_STORAGE_KEY) || '');
+    if (!u) {
+      u = normalizeUserKey(window.prompt('نام کاربر را وارد کنید (برای ذخیره وضعیت خوانده‌شده‌ها):', 'کاربر ۱') || '');
+      if (!u) u = 'کاربر ۱';
+      try { localStorage.setItem(USER_STORAGE_KEY, u); } catch {}
+    }
+    return u;
+  }
+
+  function setCurrentUser(name, { persist = true } = {}) {
+    currentUser = normalizeUserKey(name) || 'کاربر ۱';
+    if (persist) {
+      try { localStorage.setItem(USER_STORAGE_KEY, currentUser); } catch {}
+    }
+    if (els.currentUserInput) els.currentUserInput.value = currentUser;
+  }
+
+  async function loadReads() {
+    if (!currentUser) { readMap = {}; return; }
     try {
-      const raw = localStorage.getItem(READ_STORAGE_KEY);
-      const parsed = raw ? JSON.parse(raw) : {};
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
-    } catch {}
-    return {};
-  }
-
-  function saveReadMap() {
-    try { localStorage.setItem(READ_STORAGE_KEY, JSON.stringify(readMap)); } catch {}
-  }
-
-  function scheduleSaveReadMap() {
-    if (readSaveTimer) return;
-    readSaveTimer = setTimeout(() => {
-      readSaveTimer = null;
-      saveReadMap();
-    }, 300);
+      const data = await api('/api/reads?user=' + encodeURIComponent(currentUser));
+      const ids = Array.isArray(data.ids) ? data.ids : [];
+      readMap = {};
+      for (const id of ids) readMap[String(id)] = 1;
+    } catch (e) {
+      // keep existing map on failure
+      console.warn('loadReads failed', e);
+    }
   }
 
   function isRead(id) {
@@ -90,12 +109,46 @@
     badgeEl.textContent = read ? 'خوانده شده' : 'خوانده نشده';
   }
 
-  function markRead(id) {
-    if (id == null) return;
+  async function flushPendingReads() {
+    if (readFlushing) return;
+    if (!currentUser || pendingReadIds.size === 0) return;
+    const ids = Array.from(pendingReadIds);
+    pendingReadIds.clear();
+    readFlushing = true;
+    try {
+      await api('/api/reads', { method: 'POST', body: JSON.stringify({ user: currentUser, news_ids: ids }) });
+    } catch (e) {
+      // re-queue on failure
+      for (const id of ids) pendingReadIds.add(id);
+      console.warn('flushPendingReads failed', e);
+    } finally {
+      readFlushing = false;
+      if (pendingReadIds.size > 0) scheduleFlushReads(1000);
+    }
+  }
+
+  function scheduleFlushReads(delay = 800) {
+    if (readFlushTimer) return;
+    readFlushTimer = setTimeout(() => {
+      readFlushTimer = null;
+      flushPendingReads();
+    }, delay);
+  }
+
+  function queueRead(id) {
+    if (id == null || !currentUser) return;
     const key = String(id);
     if (readMap[key]) return;
     readMap[key] = 1;
-    scheduleSaveReadMap();
+    pendingReadIds.add(Number(id));
+    scheduleFlushReads();
+  }
+
+  function markRead(id) {
+    if (id == null) return;
+    const key = String(id);
+    const wasRead = !!readMap[key];
+    if (!wasRead) queueRead(id);
     if (!els.newsList) return;
     const safeKey = (window.CSS && typeof CSS.escape === 'function') ? CSS.escape(key) : key.replace(/[^a-zA-Z0-9_\-]/g, '\\$&');
     const itemEl = els.newsList.querySelector(`.news-item[data-id="${safeKey}"]`);
@@ -127,8 +180,6 @@
       readObserver.observe(el);
     });
   }
-
-  readMap = loadReadMap();
 
   const sourceTypeMeta = {
     telegram: {
@@ -386,6 +437,8 @@
     els.newsList.innerHTML = '';
     const frag = document.createDocumentFragment();
     for (const item of state.news) {
+      // merge server-provided read status for current user
+      if (item && item.id != null && item.is_read) readMap[String(item.id)] = 1;
       const node = els.newsItemTemplate.content.firstElementChild.cloneNode(true);
       node.dataset.id = item.id;
       const dateEl = node.querySelector('.news-date');
@@ -465,6 +518,7 @@
       if (state.view.type === 'pinned') params.set('pinned', '1');
       if (state.view.type === 'folder' && state.view.folderId) params.set('folder_id', String(state.view.folderId));
       if (state.search) params.set('q', state.search);
+      if (currentUser) params.set('user', currentUser);
       params.set('sort', state.sort || 'desc');
       params.set('limit', '200');
       const data = await api('/api/news?' + params.toString());
@@ -609,21 +663,27 @@
         true
       );
     } else {
-      // Default: try loading in iframe. Many sites block embedding via X-Frame-Options/CSP.
+      // Default: load via server-side preview proxy so pages that block framing can still be shown.
       els.previewFrame.classList.remove('hidden');
       if (els.previewEmbed) els.previewEmbed.classList.add('hidden');
-      setPreviewNotice('در حال بارگذاری پیش‌نمایش… اگر صفحه سفید ماند، احتمالاً سایت نمایش در قاب را مسدود کرده است.', true);
+      setPreviewNotice('در حال بارگذاری پیش‌نمایش در قاب…', true);
 
       const link = item.link;
+      const proxySrc = '/api/preview?url=' + encodeURIComponent(link);
       const onDone = (msg) => {
         if (currentPreviewLink !== link) return;
         setPreviewNotice(msg, true);
       };
-      els.previewFrame.onload = () => onDone('اگر محتوا نمایش داده نشد (صفحه سفید/مسدود)، از «باز کردن در تب جدید» استفاده کنید.');
+      els.previewFrame.onload = () => {
+        if (currentPreviewLink !== link) return;
+        // If the proxied page failed, our server may return an error text/html or text; we can't inspect cross-origin-like cases easily,
+        // but keep a helpful hint. User can always open in a new tab.
+        setPreviewNotice('اگر صفحه به‌درستی نمایش داده نشد، می‌توانید از «باز کردن در تب جدید» استفاده کنید.', true);
+      };
       els.previewFrame.onerror = () => onDone('بارگذاری پیش‌نمایش ناموفق بود. از «باز کردن در تب جدید» استفاده کنید.');
       setTimeout(() => {
         if (currentPreviewLink === link) {
-          try { els.previewFrame.src = link; } catch { onDone('امکان بارگذاری این لینک در قاب وجود ندارد. از «باز کردن در تب جدید» استفاده کنید.'); }
+          try { els.previewFrame.src = proxySrc; } catch { onDone('امکان بارگذاری این لینک در قاب وجود ندارد. از «باز کردن در تب جدید» استفاده کنید.'); }
         }
       }, 0);
     }
@@ -859,10 +919,52 @@
 
     if (els.sortSelect) {
       els.sortSelect.addEventListener('change', () => {
-        state.sort = els.sortSelect.value === 'asc' ? 'asc' : 'desc';
+        const v = els.sortSelect.value;
+        state.sort = (v === 'asc' || v === 'unread' || v === 'read') ? v : 'desc';
         loadNews();
       });
     }
+
+    async function applyUserChange() {
+      const name = normalizeUserKey(els.currentUserInput ? els.currentUserInput.value : currentUser);
+      if (!name) {
+        if (els.currentUserInput) els.currentUserInput.value = currentUser;
+        showToast('نام کاربر نمی‌تواند خالی باشد.');
+        return;
+      }
+      if (name === currentUser) return;
+      await flushPendingReads();
+      setCurrentUser(name);
+      readMap = {};
+      pendingReadIds.clear();
+      setStatus('در حال بارگذاری وضعیت خوانده‌شده‌های کاربر...');
+      await loadReads();
+      await loadNews();
+      showToast(`کاربر فعال: ${currentUser}`);
+    }
+
+    if (els.setUserBtn) {
+      els.setUserBtn.addEventListener('click', () => { applyUserChange().catch(err => showToast(err.message || 'خطا در تغییر کاربر')); });
+    }
+    if (els.currentUserInput) {
+      els.currentUserInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          applyUserChange().catch(err => showToast(err.message || 'خطا در تغییر کاربر'));
+        }
+      });
+      els.currentUserInput.addEventListener('blur', () => {
+        // apply on blur if changed
+        const name = normalizeUserKey(els.currentUserInput.value);
+        if (name && name !== currentUser) applyUserChange().catch(() => {});
+        else if (!name) els.currentUserInput.value = currentUser;
+      });
+    }
+
+    window.addEventListener('beforeunload', () => { flushPendingReads(); });
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') flushPendingReads();
+    });
 
     els.newFolderBtn.addEventListener('click', () => openFolderModal(null));
     els.modalClose.addEventListener('click', closeFolderModal);
@@ -931,10 +1033,12 @@
     updateSourceFormMeta();
     bindEvents();
     if (els.sortSelect) els.sortSelect.value = state.sort || 'desc';
+    setCurrentUser(loadCurrentUser(), { persist: true });
     setStatus('در حال بارگذاری...');
     try {
-      // Load cached data first for fast initial render
-      await Promise.all([loadSources(), loadFolders(), loadNews(), loadCounts()]);
+      // Load core data and per-user read state, then render news quickly
+      await Promise.all([loadSources(), loadFolders(), loadCounts(), loadReads()]);
+      await loadNews();
     } catch (e) {
       setStatus('خطا در اتصال به سرور: ' + e.message);
       return;
@@ -945,7 +1049,7 @@
       try {
         setStatus('در حال دریافت خبرهای جدید...');
         await api('/api/fetch', { method: 'POST', body: '{}' });
-        await Promise.all([loadSources(), loadNews(), loadCounts()]);
+        await Promise.all([loadSources(), loadReads(), loadNews(), loadCounts()]);
       } catch (e) {
         // keep existing content visible; show non-fatal status
         setStatus('نمایش خبرهای موجود (خطا در دریافت خبرهای جدید: ' + e.message + ')');
