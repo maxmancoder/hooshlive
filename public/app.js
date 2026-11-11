@@ -346,12 +346,9 @@
 
   async function loadCounts() {
     try {
-      const [allRes, pinnedRes] = await Promise.all([
-        api('/api/news?limit=1'),
-        api('/api/news?pinned=1&limit=1'),
-      ]);
-      els.countAll.textContent = String(allRes.total ?? 0);
-      els.countPinned.textContent = String(pinnedRes.total ?? 0);
+      const data = await api('/api/counts');
+      els.countAll.textContent = String(data.all ?? 0);
+      els.countPinned.textContent = String(data.pinned ?? 0);
     } catch (e) {
       // non-fatal
     }
@@ -772,9 +769,7 @@
     bindEvents();
     setStatus('در حال آماده‌سازی...');
     try {
-      await Promise.all([loadSources(), loadFolders()]);
-      await loadNews();
-      await loadCounts();
+      await Promise.all([loadSources(), loadFolders(), loadNews(), loadCounts()]);
     } catch (e) {
       setStatus('خطا در اتصال به سرور: ' + e.message);
     }

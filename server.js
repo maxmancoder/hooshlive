@@ -73,6 +73,7 @@ async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_news_published ON news(published_at DESC);
     CREATE INDEX IF NOT EXISTS idx_news_source ON news(source_id);
     CREATE INDEX IF NOT EXISTS idx_news_pinned ON news(pinned);
+    CREATE INDEX IF NOT EXISTS idx_news_sort ON news ((COALESCE(published_at, fetched_at)) DESC, id DESC);
   `);
   await pool.query(
     "ALTER TABLE folders ADD COLUMN IF NOT EXISTS source_ids TEXT NOT NULL DEFAULT '[]'"
@@ -476,6 +477,10 @@ function matchFolder(newsRow, folder) {
   return hasSourceFilter ? bySource : byKeyword;
 }
 
+function escapeLike(s) {
+  return String(s || '').replace(/[\\%_]/g, '\\$&');
+}
+
 async function queryNews(params) {
   const limit = Math.min(Math.max(parseInt(params.limit || '200', 10) || 200, 1), 1000);
   const offset = Math.max(parseInt(params.offset || '0', 10) || 0, 0);
@@ -483,30 +488,79 @@ async function queryNews(params) {
   const folderId = params.folder_id ? parseInt(params.folder_id, 10) : null;
   const search = String(params.q || '').trim().toLowerCase();
 
-  const { rows } = await pool.query(`
-    SELECT
-      n.id, n.source_id, n.title, n.link, n.published_at, n.fetched_at, n.pinned,
-      COALESCE(NULLIF(n.source_name, ''), s.name) AS source_name,
-      COALESCE(NULLIF(n.source_type, ''), s.type) AS source_type
-    FROM news n
-    LEFT JOIN sources s ON s.id = n.source_id
-    ORDER BY COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC
-  `);
-
-  let filtered = rows;
-  if (pinnedOnly) filtered = filtered.filter(r => r.pinned);
-  if (search) filtered = filtered.filter(r => (r.title || '').toLowerCase().includes(search) || (r.source_name || '').toLowerCase().includes(search));
-
+  let folder = null;
   if (folderId) {
-    const folder = await getFolderById(folderId);
+    folder = await getFolderById(folderId);
     if (!folder) return { items: [], total: 0, folder: null };
-    filtered = filtered.filter(r => matchFolder(r, folder));
-    const total = filtered.length;
-    return { items: filtered.slice(offset, offset + limit), total, folder };
   }
 
-  const total = filtered.length;
-  return { items: filtered.slice(offset, offset + limit), total };
+  const where = [];
+  const values = [];
+  const add = (val) => { values.push(val); return `$${values.length}`; };
+
+  if (pinnedOnly) {
+    where.push('n.pinned = TRUE');
+  }
+
+  if (search) {
+    const p = add(`%${escapeLike(search)}%`);
+    where.push(`(LOWER(n.title) LIKE ${p} ESCAPE '\\' OR LOWER(COALESCE(NULLIF(n.source_name,''), s.name, '')) LIKE ${p} ESCAPE '\\')`);
+  }
+
+  if (folder) {
+    const sourceIds = parseFolderSourceIds(folder);
+    const kws = parseFolderKeywords(folder);
+    const hasSourceFilter = sourceIds.length > 0;
+    const hasKeywordFilter = kws.length > 0;
+
+    if (!hasSourceFilter && !hasKeywordFilter) {
+      return { items: [], total: 0, folder };
+    }
+
+    const parts = [];
+    if (hasSourceFilter) {
+      const p = add(sourceIds);
+      parts.push(`n.source_id = ANY(${p}::int[])`);
+    }
+    if (hasKeywordFilter) {
+      const kwParts = kws.map(k => {
+        const p = add(`%${escapeLike(k)}%`);
+        return `LOWER(n.title) LIKE ${p} ESCAPE '\\'`;
+      });
+      parts.push(`(${kwParts.join(' OR ')})`);
+    }
+    where.push(`(${parts.join(' OR ')})`);
+  }
+
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  const baseSql = `
+    FROM news n
+    LEFT JOIN sources s ON s.id = n.source_id
+    ${whereSql}
+  `;
+  const orderSql = 'ORDER BY COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC';
+
+  const countValues = values.slice();
+  const countRes = await pool.query(`SELECT COUNT(*)::int AS total ${baseSql}`, countValues);
+  const total = (countRes.rows[0] && countRes.rows[0].total) || 0;
+
+  const dataValues = values.slice();
+  const limitIdx = dataValues.push(limit);
+  const offsetIdx = dataValues.push(offset);
+  const dataRes = await pool.query(
+    `SELECT
+       n.id, n.source_id, n.title, n.link, n.published_at, n.fetched_at, n.pinned,
+       COALESCE(NULLIF(n.source_name, ''), s.name) AS source_name,
+       COALESCE(NULLIF(n.source_type, ''), s.type) AS source_type
+     ${baseSql}
+     ${orderSql}
+     LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+    dataValues
+  );
+
+  const result = { items: dataRes.rows, total };
+  if (folder) result.folder = folder;
+  return result;
 }
 
 async function getFolderById(id) {
@@ -578,6 +632,17 @@ async function handleApi(req, res, urlObj) {
     if (method === 'GET' && pathname === '/api/news') {
       const data = await queryNews(Object.fromEntries(searchParams.entries()));
       return sendJson(res, 200, data);
+    }
+
+    if (method === 'GET' && pathname === '/api/counts') {
+      const { rows } = await pool.query(`
+        SELECT
+          COUNT(*)::int AS all_count,
+          COUNT(*) FILTER (WHERE pinned = TRUE)::int AS pinned_count
+        FROM news
+      `);
+      const r = rows[0] || {};
+      return sendJson(res, 200, { all: r.all_count || 0, pinned: r.pinned_count || 0 });
     }
 
     if (method === 'POST' && /^\/api\/news\/\d+\/pin$/.test(pathname)) {
