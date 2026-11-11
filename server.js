@@ -2,60 +2,66 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { URL } = require('url');
-const { DatabaseSync } = require('node:sqlite');
+const { Pool } = require('pg');
 
 const ROOT = __dirname;
 const PUBLIC_DIR = path.join(ROOT, 'public');
-const DATA_DIR = path.join(ROOT, 'data');
-const DB_PATH = path.join(DATA_DIR, 'hooshlive.db');
 const PORT = Number(process.env.PORT) || 3000;
 const FETCH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+function buildPool() {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error('DATABASE_URL environment variable is required');
+  }
+  const ca =
+    process.env.DATABASE_CA_CERT ||
+    process.env.PG_CA_CERT ||
+    process.env.PGSSLROOTCERT_CONTENT;
+  const ssl = ca
+    ? { ca, rejectUnauthorized: true }
+    : { rejectUnauthorized: false };
+  return new Pool({ connectionString, ssl });
+}
 
-const db = new DatabaseSync(DB_PATH);
-db.exec('PRAGMA journal_mode = WAL;');
-db.exec('PRAGMA foreign_keys = ON;');
+const pool = buildPool();
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS sources (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  type TEXT NOT NULL,
-  name TEXT NOT NULL,
-  config TEXT NOT NULL DEFAULT '{}',
-  enabled INTEGER NOT NULL DEFAULT 1,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+async function initDb() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS sources (
+      id SERIAL PRIMARY KEY,
+      type TEXT NOT NULL,
+      name TEXT NOT NULL,
+      config TEXT NOT NULL DEFAULT '{}',
+      enabled BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
 
-CREATE TABLE IF NOT EXISTS news (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  source_id INTEGER,
-  title TEXT NOT NULL,
-  link TEXT NOT NULL UNIQUE,
-  published_at TEXT,
-  fetched_at TEXT NOT NULL DEFAULT (datetime('now')),
-  pinned INTEGER NOT NULL DEFAULT 0,
-  FOREIGN KEY(source_id) REFERENCES sources(id) ON DELETE SET NULL
-);
+    CREATE TABLE IF NOT EXISTS news (
+      id SERIAL PRIMARY KEY,
+      source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+      title TEXT NOT NULL,
+      link TEXT NOT NULL UNIQUE,
+      published_at TIMESTAMPTZ,
+      fetched_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      pinned BOOLEAN NOT NULL DEFAULT FALSE
+    );
 
-CREATE TABLE IF NOT EXISTS folders (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL,
-  keywords TEXT NOT NULL DEFAULT '',
-  source_ids TEXT NOT NULL DEFAULT '[]',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
+    CREATE TABLE IF NOT EXISTS folders (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL,
+      keywords TEXT NOT NULL DEFAULT '',
+      source_ids TEXT NOT NULL DEFAULT '[]',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
 
-CREATE INDEX IF NOT EXISTS idx_news_published ON news(published_at DESC);
-CREATE INDEX IF NOT EXISTS idx_news_source ON news(source_id);
-CREATE INDEX IF NOT EXISTS idx_news_pinned ON news(pinned);
-`);
-
-// Migration: add source_ids to folders for existing databases
-try {
-  db.exec("ALTER TABLE folders ADD COLUMN source_ids TEXT NOT NULL DEFAULT '[]'");
-} catch (_) {
-  // column already exists
+    CREATE INDEX IF NOT EXISTS idx_news_published ON news(published_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_news_source ON news(source_id);
+    CREATE INDEX IF NOT EXISTS idx_news_pinned ON news(pinned);
+  `);
+  await pool.query(
+    "ALTER TABLE folders ADD COLUMN IF NOT EXISTS source_ids TEXT NOT NULL DEFAULT '[]'"
+  );
 }
 
 function nowIso() {
@@ -330,23 +336,21 @@ async function fetchSourceItems(source) {
   }
 }
 
-const insertNewsStmt = () => db.prepare(`
-  INSERT INTO news (source_id, title, link, published_at, fetched_at)
-  VALUES (?, ?, ?, ?, ?)
-  ON CONFLICT(link) DO NOTHING
-`);
-
 async function syncSource(source) {
   const started = Date.now();
   let fetched = 0, inserted = 0, error = null;
   try {
     const items = await fetchSourceItems(source);
     fetched = items.length;
-    const stmt = insertNewsStmt();
     const t = nowIso();
     for (const item of items) {
-      const info = stmt.run(source.id, item.title, item.link, item.published_at || t, t);
-      if (info.changes > 0) inserted += Number(info.changes);
+      const res = await pool.query(
+        `INSERT INTO news (source_id, title, link, published_at, fetched_at)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (link) DO NOTHING`,
+        [source.id, item.title, item.link, item.published_at || t, t]
+      );
+      if (res.rowCount > 0) inserted += res.rowCount;
     }
   } catch (e) {
     error = e && e.message ? e.message : String(e);
@@ -355,7 +359,7 @@ async function syncSource(source) {
 }
 
 async function syncAllSources() {
-  const sources = db.prepare('SELECT * FROM sources WHERE enabled = 1 ORDER BY id').all();
+  const { rows: sources } = await pool.query('SELECT * FROM sources WHERE enabled = TRUE ORDER BY id');
   const results = [];
   for (const s of sources) {
     results.push(await syncSource(s));
@@ -376,19 +380,22 @@ async function guardedSyncAll() {
   }
 }
 
-function getFolders() {
-  return db.prepare('SELECT * FROM folders ORDER BY created_at ASC, id ASC').all();
+async function getFolders() {
+  const { rows } = await pool.query('SELECT * FROM folders ORDER BY created_at ASC, id ASC');
+  return rows;
 }
 
-function getSources() {
-  return db.prepare('SELECT * FROM sources ORDER BY created_at DESC, id DESC').all();
+async function getSources() {
+  const { rows } = await pool.query('SELECT * FROM sources ORDER BY created_at DESC, id DESC');
+  return rows;
 }
 
-function getSourceById(id) {
-  return db.prepare('SELECT * FROM sources WHERE id = ?').get(id);
+async function getSourceById(id) {
+  const { rows } = await pool.query('SELECT * FROM sources WHERE id = $1', [id]);
+  return rows[0] || null;
 }
 
-function normalizeSourceIds(input) {
+async function normalizeSourceIds(input) {
   let arr = [];
   if (Array.isArray(input)) arr = input;
   else if (typeof input === 'string') {
@@ -397,9 +404,8 @@ function normalizeSourceIds(input) {
   if (!Array.isArray(arr)) return [];
   const unique = [...new Set(arr.map(x => parseInt(x, 10)).filter(x => Number.isInteger(x) && x > 0))];
   if (!unique.length) return [];
-  // keep only existing source IDs
-  const placeholders = unique.map(() => '?').join(',');
-  const rows = db.prepare(`SELECT id FROM sources WHERE id IN (${placeholders})`).all(...unique);
+  const placeholders = unique.map((_, i) => `$${i + 1}`).join(',');
+  const { rows } = await pool.query(`SELECT id FROM sources WHERE id IN (${placeholders})`, unique);
   const existing = new Set(rows.map(r => r.id));
   return unique.filter(id => existing.has(id));
 }
@@ -445,33 +451,39 @@ function matchFolder(newsRow, folder) {
   return hasSourceFilter ? bySource : byKeyword;
 }
 
-function queryNews(params) {
+async function queryNews(params) {
   const limit = Math.min(Math.max(parseInt(params.limit || '200', 10) || 200, 1), 1000);
   const offset = Math.max(parseInt(params.offset || '0', 10) || 0, 0);
   const pinnedOnly = params.pinned === '1' || params.pinned === 'true';
   const folderId = params.folder_id ? parseInt(params.folder_id, 10) : null;
   const search = String(params.q || '').trim().toLowerCase();
 
-  let rows = db.prepare(`
+  const { rows } = await pool.query(`
     SELECT n.*, s.name AS source_name, s.type AS source_type
     FROM news n
     LEFT JOIN sources s ON s.id = n.source_id
     ORDER BY COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC
-  `).all();
+  `);
 
-  if (pinnedOnly) rows = rows.filter(r => r.pinned);
-  if (search) rows = rows.filter(r => (r.title || '').toLowerCase().includes(search) || (r.source_name || '').toLowerCase().includes(search));
+  let filtered = rows;
+  if (pinnedOnly) filtered = filtered.filter(r => r.pinned);
+  if (search) filtered = filtered.filter(r => (r.title || '').toLowerCase().includes(search) || (r.source_name || '').toLowerCase().includes(search));
 
   if (folderId) {
-    const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(folderId);
+    const folder = await getFolderById(folderId);
     if (!folder) return { items: [], total: 0, folder: null };
-    rows = rows.filter(r => matchFolder(r, folder));
-    const total = rows.length;
-    return { items: rows.slice(offset, offset + limit), total, folder };
+    filtered = filtered.filter(r => matchFolder(r, folder));
+    const total = filtered.length;
+    return { items: filtered.slice(offset, offset + limit), total, folder };
   }
 
-  const total = rows.length;
-  return { items: rows.slice(offset, offset + limit), total };
+  const total = filtered.length;
+  return { items: filtered.slice(offset, offset + limit), total };
+}
+
+async function getFolderById(id) {
+  const { rows } = await pool.query('SELECT * FROM folders WHERE id = $1', [id]);
+  return rows[0] || null;
 }
 
 async function handleApi(req, res, urlObj) {
@@ -484,7 +496,7 @@ async function handleApi(req, res, urlObj) {
     }
 
     if (method === 'GET' && pathname === '/api/sources') {
-      return sendJson(res, 200, { sources: getSources() });
+      return sendJson(res, 200, { sources: await getSources() });
     }
 
     if (method === 'POST' && pathname === '/api/sources') {
@@ -497,8 +509,11 @@ async function handleApi(req, res, urlObj) {
       if (type === 'telegram' && !config.username && !config.url) return sendJson(res, 400, { error: 'نام کاربری یا لینک کانال تلگرام الزامی است' });
       if (type === 'youtube' && !config.url && !config.channel && !config.handle) return sendJson(res, 400, { error: 'لینک/شناسه کانال یوتیوب الزامی است' });
       if (type === 'rss' && !config.url) return sendJson(res, 400, { error: 'آدرس فید RSS الزامی است' });
-      const info = db.prepare('INSERT INTO sources (type, name, config, enabled) VALUES (?, ?, ?, 1)').run(type, name, JSON.stringify(config));
-      const source = getSourceById(info.lastInsertRowid);
+      const { rows } = await pool.query(
+        'INSERT INTO sources (type, name, config, enabled) VALUES ($1, $2, $3, TRUE) RETURNING *',
+        [type, name, JSON.stringify(config)]
+      );
+      const source = rows[0];
       // initial fetch in background
       syncSource(source).then(r => console.log('[fetch:new]', r)).catch(() => {});
       return sendJson(res, 201, { source });
@@ -507,21 +522,21 @@ async function handleApi(req, res, urlObj) {
     if (method === 'DELETE' && pathname.startsWith('/api/sources/')) {
       const id = parseInt(pathname.split('/')[3], 10);
       if (!id) return sendJson(res, 400, { error: 'Invalid id' });
-      db.prepare('DELETE FROM sources WHERE id = ?').run(id);
+      await pool.query('DELETE FROM sources WHERE id = $1', [id]);
       return sendJson(res, 200, { ok: true });
     }
 
     if (method === 'POST' && /^\/api\/sources\/\d+\/toggle$/.test(pathname)) {
       const id = parseInt(pathname.split('/')[3], 10);
       const body = await readJson(req);
-      const enabled = body.enabled ? 1 : 0;
-      db.prepare('UPDATE sources SET enabled = ? WHERE id = ?').run(enabled, id);
-      return sendJson(res, 200, { source: getSourceById(id) });
+      const enabled = !!body.enabled;
+      await pool.query('UPDATE sources SET enabled = $1 WHERE id = $2', [enabled, id]);
+      return sendJson(res, 200, { source: await getSourceById(id) });
     }
 
     if (method === 'POST' && /^\/api\/sources\/\d+\/fetch$/.test(pathname)) {
       const id = parseInt(pathname.split('/')[3], 10);
-      const source = getSourceById(id);
+      const source = await getSourceById(id);
       if (!source) return sendJson(res, 404, { error: 'منبع پیدا نشد' });
       const result = await syncSource(source);
       return sendJson(res, 200, { result });
@@ -533,21 +548,24 @@ async function handleApi(req, res, urlObj) {
     }
 
     if (method === 'GET' && pathname === '/api/news') {
-      const data = queryNews(Object.fromEntries(searchParams.entries()));
+      const data = await queryNews(Object.fromEntries(searchParams.entries()));
       return sendJson(res, 200, data);
     }
 
     if (method === 'POST' && /^\/api\/news\/\d+\/pin$/.test(pathname)) {
       const id = parseInt(pathname.split('/')[3], 10);
       const body = await readJson(req);
-      const pinned = body.pinned ? 1 : 0;
-      db.prepare('UPDATE news SET pinned = ? WHERE id = ?').run(pinned, id);
-      const item = db.prepare('SELECT n.*, s.name AS source_name, s.type AS source_type FROM news n LEFT JOIN sources s ON s.id=n.source_id WHERE n.id=?').get(id);
+      const pinned = !!body.pinned;
+      await pool.query('UPDATE news SET pinned = $1 WHERE id = $2', [pinned, id]);
+      const item = await pool.query(
+        'SELECT n.*, s.name AS source_name, s.type AS source_type FROM news n LEFT JOIN sources s ON s.id=n.source_id WHERE n.id=$1',
+        [id]
+      ).then(r => r.rows[0] || null);
       return sendJson(res, 200, { item });
     }
 
     if (method === 'GET' && pathname === '/api/folders') {
-      return sendJson(res, 200, { folders: getFolders() });
+      return sendJson(res, 200, { folders: await getFolders() });
     }
 
     if (method === 'POST' && pathname === '/api/folders') {
@@ -555,13 +573,15 @@ async function handleApi(req, res, urlObj) {
       const name = String(body.name || '').trim();
       let keywords = String(body.keywords || '').trim();
       const rawSourceIds = body.source_ids;
-      const sourceIds = normalizeSourceIds(rawSourceIds);
+      const sourceIds = await normalizeSourceIds(rawSourceIds);
       console.log('[folders:create]', { name, keywords, rawSourceIds, sourceIds });
       if (!name) return sendJson(res, 400, { error: 'نام پوشه الزامی است' });
       if (!keywords && sourceIds.length === 0) keywords = name; // default filter
-      const info = db.prepare('INSERT INTO folders (name, keywords, source_ids) VALUES (?, ?, ?)').run(name, keywords, JSON.stringify(sourceIds));
-      const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(info.lastInsertRowid);
-      return sendJson(res, 201, { folder });
+      const { rows } = await pool.query(
+        'INSERT INTO folders (name, keywords, source_ids) VALUES ($1, $2, $3) RETURNING *',
+        [name, keywords, JSON.stringify(sourceIds)]
+      );
+      return sendJson(res, 201, { folder: rows[0] });
     }
 
     if (method === 'PUT' && /^\/api\/folders\/\d+$/.test(pathname)) {
@@ -570,18 +590,21 @@ async function handleApi(req, res, urlObj) {
       const name = String(body.name || '').trim();
       let keywords = String(body.keywords || '').trim();
       const rawSourceIds = body.source_ids;
-      const sourceIds = normalizeSourceIds(rawSourceIds);
+      const sourceIds = await normalizeSourceIds(rawSourceIds);
       console.log('[folders:update]', { id, name, keywords, rawSourceIds, sourceIds });
       if (!name) return sendJson(res, 400, { error: 'نام پوشه الزامی است' });
       if (!keywords && sourceIds.length === 0) keywords = name;
-      db.prepare('UPDATE folders SET name = ?, keywords = ?, source_ids = ? WHERE id = ?').run(name, keywords, JSON.stringify(sourceIds), id);
-      const folder = db.prepare('SELECT * FROM folders WHERE id = ?').get(id);
+      await pool.query(
+        'UPDATE folders SET name = $1, keywords = $2, source_ids = $3 WHERE id = $4',
+        [name, keywords, JSON.stringify(sourceIds), id]
+      );
+      const folder = await getFolderById(id);
       return sendJson(res, 200, { folder });
     }
 
     if (method === 'DELETE' && /^\/api\/folders\/\d+$/.test(pathname)) {
       const id = parseInt(pathname.split('/')[3], 10);
-      db.prepare('DELETE FROM folders WHERE id = ?').run(id);
+      await pool.query('DELETE FROM folders WHERE id = $1', [id]);
       return sendJson(res, 200, { ok: true });
     }
 
@@ -610,9 +633,17 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`hooshlive running at http://localhost:${PORT}`);
-  // initial sync shortly after start
-  setTimeout(() => { guardedSyncAll().catch(err => console.error('[fetch:init]', err)); }, 1500);
-  setInterval(() => { guardedSyncAll().catch(err => console.error('[fetch:interval]', err)); }, FETCH_INTERVAL_MS);
-});
+(async () => {
+  try {
+    await initDb();
+    server.listen(PORT, () => {
+      console.log(`hooshlive running at http://localhost:${PORT}`);
+      // initial sync shortly after start
+      setTimeout(() => { guardedSyncAll().catch(err => console.error('[fetch:init]', err)); }, 1500);
+      setInterval(() => { guardedSyncAll().catch(err => console.error('[fetch:interval]', err)); }, FETCH_INTERVAL_MS);
+    });
+  } catch (e) {
+    console.error('Failed to start:', e);
+    process.exit(1);
+  }
+})();
