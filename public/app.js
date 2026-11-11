@@ -38,6 +38,14 @@
     folderCancel: document.getElementById('folderCancel'),
     toast: document.getElementById('toast'),
     newsItemTemplate: document.getElementById('newsItemTemplate'),
+    previewBackdrop: document.getElementById('previewBackdrop'),
+    previewTitle: document.getElementById('previewTitle'),
+    previewClose: document.getElementById('previewClose'),
+    previewSource: document.getElementById('previewSource'),
+    previewUrl: document.getElementById('previewUrl'),
+    previewOpenTab: document.getElementById('previewOpenTab'),
+    previewCopy: document.getElementById('previewCopy'),
+    previewFrame: document.getElementById('previewFrame'),
   };
 
   const sourceTypeMeta = {
@@ -307,11 +315,15 @@
       dateEl.textContent = formatDate(displayDate);
       dateEl.setAttribute('datetime', displayDate || '');
       dateEl.title = displayDate || '';
-      srcEl.textContent = item.source_name ? `${item.source_name} (${typeLabel(item.source_type)})` : 'منبع نامشخص';
+      const sourceText = item.source_name ? `${item.source_name} (${typeLabel(item.source_type)})` : 'منبع نامشخص';
+      srcEl.textContent = sourceText;
 
       titleEl.textContent = item.title || 'بدون عنوان';
       titleEl.href = item.link || '#';
-      titleEl.title = item.link || '';
+      titleEl.title = item.title || item.link || '';
+      titleEl.dataset.link = item.link || '';
+      titleEl.dataset.title = item.title || 'بدون عنوان';
+      titleEl.dataset.sourceText = sourceText;
 
       if (item.pinned) {
         pinBtn.classList.add('active');
@@ -417,6 +429,35 @@
     els.modalBackdrop.setAttribute('aria-hidden', 'true');
     els.folderForm.reset();
     els.folderId.value = '';
+  }
+
+  let currentPreviewLink = '';
+
+  function openPreview(item) {
+    if (!item || !item.link) return;
+    currentPreviewLink = item.link;
+    const title = item.title || 'بدون عنوان';
+    const sourceText = item.sourceText
+      || (item.source_name ? `${item.source_name} (${typeLabel(item.source_type)})` : 'منبع نامشخص');
+
+    els.previewTitle.textContent = title;
+    els.previewSource.textContent = sourceText;
+    els.previewUrl.textContent = item.link;
+    els.previewUrl.title = item.link;
+    // Load in iframe inside popup modal so user can view; some sites may block embedding.
+    els.previewFrame.src = 'about:blank';
+    // Small defer helps some browsers reset iframe state between items
+    setTimeout(() => { if (currentPreviewLink === item.link) els.previewFrame.src = item.link; }, 0);
+
+    els.previewBackdrop.classList.remove('hidden');
+    els.previewBackdrop.setAttribute('aria-hidden', 'false');
+  }
+
+  function closePreview() {
+    els.previewBackdrop.classList.add('hidden');
+    els.previewBackdrop.setAttribute('aria-hidden', 'true');
+    els.previewFrame.src = 'about:blank';
+    currentPreviewLink = '';
   }
 
   async function copyToClipboard(text) {
@@ -564,8 +605,22 @@
     });
 
     els.newsList.addEventListener('click', async (e) => {
+      const titleLink = e.target.closest('.news-title');
       const pinBtn = e.target.closest('.pin-btn');
       const copyBtn = e.target.closest('.copy-btn');
+
+      if (titleLink) {
+        e.preventDefault();
+        const link = titleLink.dataset.link || titleLink.getAttribute('href') || '';
+        if (!link || link === '#') return;
+        openPreview({
+          link,
+          title: titleLink.dataset.title || titleLink.textContent || 'بدون عنوان',
+          sourceText: titleLink.dataset.sourceText || '',
+        });
+        return;
+      }
+
       if (pinBtn) {
         const id = Number(pinBtn.dataset.id);
         const pinned = pinBtn.dataset.pinned !== '1';
@@ -611,8 +666,34 @@
       if (e.target === els.modalBackdrop) closeFolderModal();
     });
     document.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !els.modalBackdrop.classList.contains('hidden')) closeFolderModal();
+      if (e.key === 'Escape') {
+        if (els.previewBackdrop && !els.previewBackdrop.classList.contains('hidden')) {
+          closePreview();
+          return;
+        }
+        if (!els.modalBackdrop.classList.contains('hidden')) closeFolderModal();
+      }
     });
+
+    if (els.previewClose) els.previewClose.addEventListener('click', closePreview);
+    if (els.previewBackdrop) {
+      els.previewBackdrop.addEventListener('click', (e) => {
+        if (e.target === els.previewBackdrop) closePreview();
+      });
+    }
+    if (els.previewOpenTab) {
+      els.previewOpenTab.addEventListener('click', () => {
+        if (!currentPreviewLink) return;
+        window.open(currentPreviewLink, '_blank', 'noopener,noreferrer');
+      });
+    }
+    if (els.previewCopy) {
+      els.previewCopy.addEventListener('click', async () => {
+        if (!currentPreviewLink) return;
+        const ok = await copyToClipboard(currentPreviewLink);
+        showToast(ok ? 'لینک کپی شد.' : 'کپی لینک انجام نشد.');
+      });
+    }
 
     els.folderForm.addEventListener('submit', async (e) => {
       e.preventDefault();

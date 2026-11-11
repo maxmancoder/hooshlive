@@ -141,7 +141,7 @@
           <span class="dot">•</span>
           <span class="news-source"></span>
         </div>
-        <a class="news-title" href="#" target="_blank" rel="noopener noreferrer"></a>
+        <a class="news-title" href="#" rel="noopener noreferrer"></a>
       </div>
       <div class="news-actions">
         <button class="btn btn-ghost btn-small pin-btn" type="button" title="پین کردن">پین</button>
@@ -149,6 +149,29 @@
       </div>
     </article>
   </template>
+
+  <div id="previewBackdrop" class="modal-backdrop hidden" aria-hidden="true">
+    <div class="modal preview-modal" role="dialog" aria-modal="true" aria-labelledby="previewTitle">
+      <div class="modal-header">
+        <h3 id="previewTitle">پیش‌نمایش خبر</h3>
+        <button id="previewClose" class="icon-btn" type="button" aria-label="بستن">×</button>
+      </div>
+      <div class="preview-body">
+        <div class="preview-meta">
+          <div id="previewSource" class="preview-source muted"></div>
+          <div id="previewUrl" class="preview-url mono" title=""></div>
+        </div>
+        <div class="preview-actions">
+          <button id="previewOpenTab" class="btn btn-primary btn-small" type="button">باز کردن در تب جدید</button>
+          <button id="previewCopy" class="btn btn-secondary btn-small" type="button">کپی لینک</button>
+        </div>
+        <div class="preview-frame-wrap">
+          <iframe id="previewFrame" title="پیش‌نمایش خبر" loading="lazy" referrerpolicy="no-referrer"></iframe>
+          <div class="preview-fallback muted small">اگر پیش‌نمایش نمایش داده نشد (برخی سایت‌ها اجازه نمایش در قاب را نمی‌دهند)، از دکمه «باز کردن در تب جدید» استفاده کنید.</div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div id="toast" class="toast" aria-live="polite"></div>
   <script src="/app.js"></script>
