@@ -32,7 +32,7 @@
       <div class="panel-header">
         <div>
           <h2>منابع خبری</h2>
-          <p class="muted">منابع را مشخص کنید (تلگرام، یوتیوب یا فید RSS). خبرها به‌صورت خودکار دریافت و در SQLite ذخیره می‌شوند.</p>
+          <p class="muted">منابع را مشخص کنید (تلگرام، یوتیوب یا فید RSS). خبرها به‌صورت خودکار دریافت و ذخیره می‌شوند.</p>
         </div>
       </div>
       <form id="sourceForm" class="source-form">
@@ -94,6 +94,10 @@
           </div>
           <div class="feed-tools">
             <input id="searchInput" class="search-input" type="search" placeholder="جستجو در عنوان خبر..." />
+            <select id="sortSelect" class="sort-select" title="مرتب‌سازی">
+              <option value="desc">جدید به قدیم</option>
+              <option value="asc">قدیم به جدید</option>
+            </select>
           </div>
         </div>
         <div id="folderActions" class="folder-actions hidden"></div>
@@ -140,6 +144,7 @@
           <time class="news-date mono"></time>
           <span class="dot">•</span>
           <span class="news-source"></span>
+          <span class="read-badge" aria-label="وضعیت خوانده‌شدن"></span>
         </div>
         <a class="news-title" href="#" rel="noopener noreferrer"></a>
       </div>

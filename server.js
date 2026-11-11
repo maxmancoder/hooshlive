@@ -641,13 +641,18 @@ async function queryNews(params) {
     where.push(`(${parts.join(' OR ')})`);
   }
 
+  const sortParam = String(params.sort || params.order || 'desc').toLowerCase();
+  const asc = sortParam === 'asc' || sortParam === 'oldest' || sortParam === 'old';
+  const orderSql = asc
+    ? 'ORDER BY COALESCE(n.published_at, n.fetched_at) ASC, n.id ASC'
+    : 'ORDER BY COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC';
+
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   const baseSql = `
     FROM news n
     LEFT JOIN sources s ON s.id = n.source_id
     ${whereSql}
   `;
-  const orderSql = 'ORDER BY COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC';
 
   const countValues = values.slice();
   const countRes = await pool.query(`SELECT COUNT(*)::int AS total ${baseSql}`, countValues);

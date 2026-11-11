@@ -5,8 +5,10 @@
     folders: [],
     news: [],
     search: '',
+    sort: 'desc',
     loading: false,
   };
+  let newsLoadSeq = 0;
 
   const els = {
     refreshBtn: document.getElementById('refreshBtn'),
@@ -24,6 +26,7 @@
     folderActions: document.getElementById('folderActions'),
     statusBar: document.getElementById('statusBar'),
     searchInput: document.getElementById('searchInput'),
+    sortSelect: document.getElementById('sortSelect'),
     countAll: document.getElementById('countAll'),
     countPinned: document.getElementById('countPinned'),
     newFolderBtn: document.getElementById('newFolderBtn'),
@@ -48,6 +51,83 @@
     previewFrame: document.getElementById('previewFrame'),
     previewEmbed: document.getElementById('previewEmbed'),
   };
+
+  const READ_STORAGE_KEY = 'hooshlive_read_news_v1';
+  let readMap = {};
+  let readSaveTimer = null;
+  let readObserver = null;
+
+  function loadReadMap() {
+    try {
+      const raw = localStorage.getItem(READ_STORAGE_KEY);
+      const parsed = raw ? JSON.parse(raw) : {};
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed;
+    } catch {}
+    return {};
+  }
+
+  function saveReadMap() {
+    try { localStorage.setItem(READ_STORAGE_KEY, JSON.stringify(readMap)); } catch {}
+  }
+
+  function scheduleSaveReadMap() {
+    if (readSaveTimer) return;
+    readSaveTimer = setTimeout(() => {
+      readSaveTimer = null;
+      saveReadMap();
+    }, 300);
+  }
+
+  function isRead(id) {
+    return !!(id != null && readMap[String(id)]);
+  }
+
+  function applyReadBadge(badgeEl, read) {
+    if (!badgeEl) return;
+    badgeEl.classList.toggle('read', !!read);
+    badgeEl.classList.toggle('unread', !read);
+    badgeEl.textContent = read ? 'خوانده شده' : 'خوانده نشده';
+  }
+
+  function markRead(id) {
+    if (id == null) return;
+    const key = String(id);
+    if (readMap[key]) return;
+    readMap[key] = 1;
+    scheduleSaveReadMap();
+    if (!els.newsList) return;
+    const safeKey = (window.CSS && typeof CSS.escape === 'function') ? CSS.escape(key) : key.replace(/[^a-zA-Z0-9_\-]/g, '\\$&');
+    const itemEl = els.newsList.querySelector(`.news-item[data-id="${safeKey}"]`);
+    if (itemEl) applyReadBadge(itemEl.querySelector('.read-badge'), true);
+  }
+
+  function setupReadObserver() {
+    if (readObserver) {
+      try { readObserver.disconnect(); } catch {}
+      readObserver = null;
+    }
+    if (!els.newsList) return;
+    if (!('IntersectionObserver' in window)) {
+      // fallback: mark all visible items as read
+      els.newsList.querySelectorAll('.news-item[data-id]').forEach(el => markRead(el.dataset.id));
+      return;
+    }
+    readObserver = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        const id = entry.target.dataset.id;
+        markRead(id);
+        try { readObserver.unobserve(entry.target); } catch {}
+      }
+    }, { root: null, threshold: 0.1 });
+
+    els.newsList.querySelectorAll('.news-item[data-id]').forEach(el => {
+      if (isRead(el.dataset.id)) return; // already read, no need to observe
+      readObserver.observe(el);
+    });
+  }
+
+  readMap = loadReadMap();
 
   const sourceTypeMeta = {
     telegram: {
@@ -293,6 +373,7 @@
   function renderNews() {
     updateFeedHeader(state.news.length);
     if (!state.news.length) {
+      if (readObserver) { try { readObserver.disconnect(); } catch {} readObserver = null; }
       let msg = 'خبری برای نمایش وجود ندارد.';
       if (state.view.type === 'pinned') msg = 'هنوز خبری پین نشده است.';
       else if (state.view.type === 'folder') msg = 'خبری مطابق فیلتر این پوشه پیدا نشد.';
@@ -308,6 +389,7 @@
       node.dataset.id = item.id;
       const dateEl = node.querySelector('.news-date');
       const srcEl = node.querySelector('.news-source');
+      const badgeEl = node.querySelector('.read-badge');
       const titleEl = node.querySelector('.news-title');
       const pinBtn = node.querySelector('.pin-btn');
       const copyBtn = node.querySelector('.copy-btn');
@@ -318,6 +400,7 @@
       dateEl.title = displayDate || '';
       const sourceText = item.source_name ? `${item.source_name} (${typeLabel(item.source_type)})` : 'منبع نامشخص';
       srcEl.textContent = sourceText;
+      applyReadBadge(badgeEl, isRead(item.id));
 
       titleEl.textContent = item.title || 'بدون عنوان';
       titleEl.href = item.link || '#';
@@ -342,6 +425,7 @@
       frag.appendChild(node);
     }
     els.newsList.appendChild(frag);
+    setupReadObserver();
   }
 
   async function loadCounts() {
@@ -372,6 +456,7 @@
   }
 
   async function loadNews() {
+    const seq = ++newsLoadSeq;
     state.loading = true;
     setStatus('در حال بارگذاری خبرها...');
     try {
@@ -379,15 +464,18 @@
       if (state.view.type === 'pinned') params.set('pinned', '1');
       if (state.view.type === 'folder' && state.view.folderId) params.set('folder_id', String(state.view.folderId));
       if (state.search) params.set('q', state.search);
-      params.set('limit', '500');
+      params.set('sort', state.sort || 'desc');
+      params.set('limit', '200');
       const data = await api('/api/news?' + params.toString());
+      if (seq !== newsLoadSeq) return; // stale response
       state.news = data.items || [];
       renderNews();
     } catch (e) {
+      if (seq !== newsLoadSeq) return;
       setStatus('خطا در بارگذاری خبرها: ' + e.message);
       els.newsList.innerHTML = `<div class="empty-state"><h3>خطا</h3><p>${escapeHtml(e.message)}</p></div>`;
     } finally {
-      state.loading = false;
+      if (seq === newsLoadSeq) state.loading = false;
     }
   }
 
@@ -720,6 +808,13 @@
       }, 250);
     });
 
+    if (els.sortSelect) {
+      els.sortSelect.addEventListener('change', () => {
+        state.sort = els.sortSelect.value === 'asc' ? 'asc' : 'desc';
+        loadNews();
+      });
+    }
+
     els.newFolderBtn.addEventListener('click', () => openFolderModal(null));
     els.modalClose.addEventListener('click', closeFolderModal);
     els.folderCancel.addEventListener('click', closeFolderModal);
@@ -786,12 +881,27 @@
   async function init() {
     updateSourceFormMeta();
     bindEvents();
-    setStatus('در حال آماده‌سازی...');
+    if (els.sortSelect) els.sortSelect.value = state.sort || 'desc';
+    setStatus('در حال بارگذاری...');
     try {
+      // Load cached data first for fast initial render
       await Promise.all([loadSources(), loadFolders(), loadNews(), loadCounts()]);
     } catch (e) {
       setStatus('خطا در اتصال به سرور: ' + e.message);
+      return;
     }
+
+    // On every visit/refresh: fetch new news in background and refresh the list
+    (async () => {
+      try {
+        setStatus('در حال دریافت خبرهای جدید...');
+        await api('/api/fetch', { method: 'POST', body: '{}' });
+        await Promise.all([loadSources(), loadNews(), loadCounts()]);
+      } catch (e) {
+        // keep existing content visible; show non-fatal status
+        setStatus('نمایش خبرهای موجود (خطا در دریافت خبرهای جدید: ' + e.message + ')');
+      }
+    })();
   }
 
   init();
