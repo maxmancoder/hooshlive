@@ -53,6 +53,8 @@ async function initDb() {
     CREATE TABLE IF NOT EXISTS news (
       id SERIAL PRIMARY KEY,
       source_id INTEGER REFERENCES sources(id) ON DELETE SET NULL,
+      source_name TEXT,
+      source_type TEXT,
       title TEXT NOT NULL,
       link TEXT NOT NULL UNIQUE,
       published_at TIMESTAMPTZ,
@@ -75,6 +77,16 @@ async function initDb() {
   await pool.query(
     "ALTER TABLE folders ADD COLUMN IF NOT EXISTS source_ids TEXT NOT NULL DEFAULT '[]'"
   );
+  await pool.query("ALTER TABLE news ADD COLUMN IF NOT EXISTS source_name TEXT");
+  await pool.query("ALTER TABLE news ADD COLUMN IF NOT EXISTS source_type TEXT");
+  await pool.query(`
+    UPDATE news n
+    SET source_name = s.name,
+        source_type = s.type
+    FROM sources s
+    WHERE n.source_id = s.id
+      AND (n.source_name IS NULL OR n.source_name = '')
+  `);
 }
 
 function nowIso() {
@@ -358,10 +370,10 @@ async function syncSource(source) {
     const t = nowIso();
     for (const item of items) {
       const res = await pool.query(
-        `INSERT INTO news (source_id, title, link, published_at, fetched_at)
-         VALUES ($1, $2, $3, $4, $5)
+        `INSERT INTO news (source_id, source_name, source_type, title, link, published_at, fetched_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (link) DO NOTHING`,
-        [source.id, item.title, item.link, item.published_at || t, t]
+        [source.id, source.name, source.type, item.title, item.link, item.published_at || t, t]
       );
       if (res.rowCount > 0) inserted += res.rowCount;
     }
@@ -472,7 +484,10 @@ async function queryNews(params) {
   const search = String(params.q || '').trim().toLowerCase();
 
   const { rows } = await pool.query(`
-    SELECT n.*, s.name AS source_name, s.type AS source_type
+    SELECT
+      n.id, n.source_id, n.title, n.link, n.published_at, n.fetched_at, n.pinned,
+      COALESCE(NULLIF(n.source_name, ''), s.name) AS source_name,
+      COALESCE(NULLIF(n.source_type, ''), s.type) AS source_type
     FROM news n
     LEFT JOIN sources s ON s.id = n.source_id
     ORDER BY COALESCE(n.published_at, n.fetched_at) DESC, n.id DESC
@@ -571,7 +586,13 @@ async function handleApi(req, res, urlObj) {
       const pinned = !!body.pinned;
       await pool.query('UPDATE news SET pinned = $1 WHERE id = $2', [pinned, id]);
       const item = await pool.query(
-        'SELECT n.*, s.name AS source_name, s.type AS source_type FROM news n LEFT JOIN sources s ON s.id=n.source_id WHERE n.id=$1',
+        `SELECT
+           n.id, n.source_id, n.title, n.link, n.published_at, n.fetched_at, n.pinned,
+           COALESCE(NULLIF(n.source_name, ''), s.name) AS source_name,
+           COALESCE(NULLIF(n.source_type, ''), s.type) AS source_type
+         FROM news n
+         LEFT JOIN sources s ON s.id = n.source_id
+         WHERE n.id = $1`,
         [id]
       ).then(r => r.rows[0] || null);
       return sendJson(res, 200, { item });
