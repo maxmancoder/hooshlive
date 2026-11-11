@@ -3,154 +3,108 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>hooshlive | روزنامه زنده هوش مصنوعی</title>
-  <meta name="description" content="روزنامه زنده هوش مصنوعی - گردآوری و نمایش خبرها از منابع انتخابی" />
+  <title>HooshLive</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <div class="app-shell">
     <header class="topbar">
-      <div class="brand">
-        <div class="brand-mark" aria-hidden="true"></div>
-        <div>
-          <h1>hooshlive</h1>
-          <p class="subtitle">روزنامه زنده هوش مصنوعی</p>
-        </div>
+    <div class="topbar-start">
+      <div class="live-badge">
+        <span class="dot"></span>
+        <span>LIVE</span>
       </div>
-      <div class="topbar-actions">
-        <button id="refreshBtn" class="btn btn-secondary" type="button" title="دریافت خبرهای جدید">
-          <span class="btn-icon">↻</span>
-          <span>به‌روزرسانی خبرها</span>
-        </button>
+      <div class="time-block">
+        <span class="time" id="time">13:23:32</span>
+        <span class="date" id="date">1406/06/18</span>
       </div>
-    </header>
-
-    <section class="panel sources-panel" aria-label="منابع خبری">
-      <div class="panel-header">
-        <div>
-          <h2>منابع خبری</h2>
-          <p class="muted">منابع را مشخص کنید (تلگرام، یوتیوب یا فید RSS). خبرها به‌صورت خودکار دریافت و در SQLite ذخیره می‌شوند.</p>
-        </div>
-      </div>
-      <form id="sourceForm" class="source-form">
-        <div class="field">
-          <label for="sourceType">نوع منبع</label>
-          <select id="sourceType" name="type" required>
-            <option value="telegram">کانال تلگرام</option>
-            <option value="youtube">کانال یوتیوب</option>
-            <option value="rss">فید RSS / سایت</option>
-          </select>
-        </div>
-        <div class="field">
-          <label for="sourceName">نام نمایشی</label>
-          <input id="sourceName" name="name" type="text" placeholder="مثلاً: OpenAI Blog" required />
-        </div>
-        <div class="field field-wide">
-          <label for="sourceValue" id="sourceValueLabel">شناسه کانال تلگرام</label>
-          <input id="sourceValue" name="value" type="text" placeholder="@channel یا https://t.me/channel" required />
-          <div class="help" id="sourceHelp">برای تلگرام: نام کاربری یا لینک عمومی کانال را وارد کنید.</div>
-        </div>
-        <div class="field field-action">
-          <label>&nbsp;</label>
-          <button class="btn btn-primary" type="submit">افزودن منبع</button>
-        </div>
-      </form>
-      <div id="sourcesList" class="sources-list"></div>
-    </section>
-
-    <div class="workspace">
-      <aside class="sidebar" aria-label="پوشه‌ها و نماها">
-        <div class="sidebar-section">
-          <div class="sidebar-title">نماها</div>
-          <button class="nav-item active" data-view="all" type="button">
-            <span>همه خبرها</span>
-            <span class="count" id="countAll">0</span>
-          </button>
-          <button class="nav-item" data-view="pinned" type="button">
-            <span>پین‌شده‌ها</span>
-            <span class="count" id="countPinned">0</span>
-          </button>
-        </div>
-        <div class="sidebar-section">
-          <div class="sidebar-title-row">
-            <div class="sidebar-title">پوشه‌های کاربر (فیلتر)</div>
-            <button id="newFolderBtn" class="icon-btn" type="button" title="پوشه جدید">+</button>
-          </div>
-          <div id="foldersNav" class="folders-nav"></div>
-        </div>
-        <div class="sidebar-footer muted small">
-          پوشه‌ها فیلتر هستند: خبر در «همه خبرها» باقی می‌ماند و در پوشه‌های مطابق نیز دیده می‌شود.
-        </div>
-      </aside>
-
-      <main class="feed-panel">
-        <div class="feed-header">
-          <div>
-            <h2 id="feedTitle">همه خبرها</h2>
-            <p id="feedMeta" class="muted">جدیدترین خبرها از منابع انتخابی</p>
-          </div>
-          <div class="feed-tools">
-            <input id="searchInput" class="search-input" type="search" placeholder="جستجو در عنوان خبر..." />
-          </div>
-        </div>
-        <div id="folderActions" class="folder-actions hidden"></div>
-        <div id="statusBar" class="status-bar"></div>
-        <div id="newsList" class="news-list" aria-live="polite"></div>
-      </main>
+      <button class="refresh" id="refreshBtn" aria-label="بروز رسانی"><span>↻</span></button>
     </div>
+    <div class="topbar-center">
+      <button class="filter-pill">
+        <span>فیلترها</span>
+        <span class="arrow">▼</span>
+      </button>
+    </div>
+    <div class="topbar-end">
+      <div class="search">
+        <input type="search" placeholder="جستجوی در خبرها..." id="searchInput" />
+        <button class="search-btn" aria-label="جستجو">🔍</button>
+      </div>
+    </div>
+    <div class="brand">
+      <span class="brand-name">HooshLive</span>
+      <div class="signal">
+        <div class="bar b1"></div><div class="bar b2"></div><div class="bar b3"></div><div class="bar b4"></div><div class="bar b5"></div>
+      </div>
+    </div>
+  </header>
+
+  <div class="app-body">
+    <main class="news-section">
+      <header class="section-header">
+        <button class="collapse-toggle" aria-label="بسته/باز کردن">▾</button>
+        <h1 class="section-title">نمایش همه خبرها</h1>
+        <span class="section-count" id="sectionCount">۰ خبر اخیر</span>
+      </header>
+      <ul class="news-list" id="newsList" role="list"></ul>
+    </main>
+
+    <aside class="sidebar">
+      <div class="sidebar-item active" data-view="all">
+        <span class="icon">⌨</span>
+        <span class="label">همه خبرها</span>
+        <span class="badge">⌨</span>
+      </div>
+      <div class="sidebar-item" data-view="pinned">
+        <span class="icon">🔔</span>
+        <span class="label">خبرهای نمایش شده</span>
+        <span class="badge">🔔</span>
+      </div>
+      <div class="sidebar-item add-more">
+        <button>+ بیشها</button>
+      </div>
+      <div class="sidebar-divider"></div>
+      <div class="sidebar-item" data-folder="urgent">
+        <span class="icon">📁</span>
+        <span class="label">فوری</span>
+        <span class="badge">📁</span>
+      </div>
+      <div class="sidebar-item" data-folder="leak">
+        <span class="icon">📁</span>
+        <span class="label">افشا</span>
+        <span class="badge">📁</span>
+      </div>
+      <div class="sidebar-item" data-folder="sports">
+        <span class="icon">📁</span>
+        <span class="label">ورزشی</span>
+        <span class="badge">📁</span>
+      </div>
+      <div class="sidebar-item" data-folder="season">
+        <span class="icon">📁</span>
+        <span class="label">سایسه</span>
+        <span class="badge">📁</span>
+      </div>
+      <div class="sidebar-footer">
+        <div class="sidebar-item" data-action="settings">
+          <span class="icon">⚙</span>
+          <span class="label">تنظیمات</span>
+        </div>
+        <div class="sidebar-item" data-action="about">
+          <span class="icon">ℹ</span>
+          <span class="label">درباره هوش لایو</span>
+        </div>
+      </div>
+    </aside>
   </div>
 
-  <div id="modalBackdrop" class="modal-backdrop hidden" aria-hidden="true">
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
-      <div class="modal-header">
-        <h3 id="modalTitle">پوشه جدید</h3>
-        <button id="modalClose" class="icon-btn" type="button" aria-label="بستن">×</button>
-      </div>
-      <form id="folderForm" class="modal-body">
-        <input type="hidden" id="folderId" />
-        <div class="field">
-          <label for="folderName">نام پوشه</label>
-          <input id="folderName" type="text" placeholder="مثلاً: هوش مصنوعی" required />
-        </div>
-        <div class="field">
-          <label>منابع این پوشه (اختیاری)</label>
-          <div id="folderSourcesList" class="folder-sources-list"></div>
-          <div class="help">اگر منبعی انتخاب شود، خبرهای آن منبع در این پوشه دیده می‌شوند. می‌توانید هم‌زمان از کلمات کلیدی هم استفاده کنید (فیلتر ترکیبی).</div>
-        </div>
-        <div class="field">
-          <label for="folderKeywords">کلمات کلیدی فیلتر (اختیاری، هر خط یا با کاما جدا کنید)</label>
-          <textarea id="folderKeywords" rows="4" placeholder="مثلاً: هوش مصنوعی، AI، GPT"></textarea>
-          <div class="help">هر خبری که عنوانش شامل یکی از این کلمات باشد نیز در این پوشه نمایش داده می‌شود.</div>
-        </div>
-        <div class="modal-actions">
-          <button type="button" id="folderCancel" class="btn btn-secondary">انصراف</button>
-          <button type="submit" class="btn btn-primary">ذخیره پوشه</button>
-        </div>
-      </form>
-    </div>
+  <div class="toast" aria-live="polite"></div>
+
   </div>
 
-  <template id="newsItemTemplate">
-    <article class="news-item">
-      <div class="news-main">
-        <div class="news-meta">
-          <time class="news-date mono"></time>
-          <span class="dot">•</span>
-          <span class="news-source"></span>
-        </div>
-        <a class="news-title" href="#" target="_blank" rel="noopener noreferrer"></a>
-      </div>
-      <div class="news-actions">
-        <button class="btn btn-ghost btn-small pin-btn" type="button" title="پین کردن">پین</button>
-        <button class="btn btn-secondary btn-small copy-btn" type="button" title="کپی لینک">کپی لینک</button>
-      </div>
-    </article>
-  </template>
-
-  <div id="toast" class="toast" aria-live="polite"></div>
   <script src="/app.js"></script>
 </body>
 </html>
