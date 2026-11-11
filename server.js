@@ -201,16 +201,16 @@ function parseDate(value) {
   return null;
 }
 
-async function fetchText(url, timeoutMs = 15000) {
+async function fetchText(url, timeoutMs = 30000) {
   const controller = new AbortController();
   const t = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await fetch(url, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'hooshlive/1.0 (+https://localhost) news-fetcher',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.9,fa;q=0.8',
+        'User-Agent': 'Mozilla/5.0 (compatible; hooshlive/1.0; +https://hooshlive.onrender.com)',
+        'Accept': 'application/rss+xml, application/atom+xml, application/xml, text/xml, application/xhtml+xml, text/html;q=0.9, */*;q=0.8',
+        'Accept-Language': 'fa-IR,fa;q=0.9,en-US;q=0.8,en;q=0.7',
       },
       redirect: 'follow',
     });
@@ -270,6 +270,12 @@ function extractAtomLink(entry) {
   return '';
 }
 
+function isLikelyFeed(content) {
+  if (!content) return false;
+  const head = String(content).slice(0, 4000);
+  return /<rss\b|<feed\b|<rdf:RDF\b|<channel\b[\s\S]*<item\b/i.test(head);
+}
+
 function parseFeed(xml) {
   const items = [];
   // RSS items
@@ -279,6 +285,11 @@ function parseFeed(xml) {
     const block = m[0];
     const title = extractTag(block, 'title');
     let link = extractTag(block, 'link');
+    if (!link) {
+      // Some RSS feeds put link in <link href="..."/> form
+      const hrefMatch = block.match(/<link[^>]*href=["']([^"']+)["'][^>]*\/?>/i);
+      if (hrefMatch) link = hrefMatch[1];
+    }
     if (!link) {
       const gm = block.match(/<guid[^>]*>([\s\S]*?)<\/guid>/i);
       if (gm && /https?:/i.test(gm[1])) link = gm[1].trim();
@@ -297,6 +308,46 @@ function parseFeed(xml) {
     if (link) items.push({ title: cleanTitle(title, 'خبر بدون عنوان'), link, published_at: parseDate(pub) || nowIso() });
   }
   return items;
+}
+
+function discoverFeedUrls(html, baseUrl) {
+  const out = [];
+  const seen = new Set();
+  const push = (u) => {
+    if (!u) return;
+    try {
+      const abs = new URL(u, baseUrl).toString();
+      if (!/^https?:/i.test(abs)) return;
+      if (seen.has(abs)) return;
+      seen.add(abs);
+      out.push(abs);
+    } catch {}
+  };
+
+  const linkRe = /<link\b[^>]*>/gi;
+  let m;
+  while ((m = linkRe.exec(html)) !== null) {
+    const tag = m[0];
+    if (!/rel=["'][^"']*alternate[^"']*["']/i.test(tag)) continue;
+    if (!/type=["'][^"']*(rss|atom|xml|feed)[^"']*["']/i.test(tag)) continue;
+    const href = tag.match(/href=["']([^"']+)["']/i);
+    if (href) push(decodeEntities(href[1]));
+  }
+
+  // Try common feed paths on the same origin/path hints
+  try {
+    const u = new URL(baseUrl);
+    const origin = u.origin;
+    const common = ['/feed', '/feed/', '/rss', '/rss/', '/rss.xml', '/feed.xml', '/atom.xml', '/index.xml', '/feeds/posts/default?alt=rss'];
+    for (const p of common) push(origin + p);
+    // also try relative to provided path (without trailing slash issues)
+    const pathBase = u.pathname.replace(/\/+$/, '');
+    if (pathBase && pathBase !== '') {
+      for (const p of ['/feed', '/feed/', '/rss', '/rss.xml', '/atom.xml']) push(origin + pathBase + p);
+    }
+  } catch {}
+
+  return out;
 }
 
 async function resolveYoutubeFeedUrl(input) {
@@ -328,10 +379,65 @@ async function fetchYoutube(source) {
 
 async function fetchRss(source) {
   const cfg = safeJson(source.config);
-  const url = String(cfg.url || '').trim();
-  if (!url) throw new Error('RSS URL is missing');
-  const xml = await fetchText(url);
-  return dedupeItems(parseFeed(xml)).slice(0, 100);
+  const inputUrl = String(cfg.url || '').trim();
+  if (!inputUrl) throw new Error('RSS URL is missing');
+
+  const tried = [];
+  const tryFetchAndParse = async (url) => {
+    tried.push(url);
+    const body = await fetchText(url);
+    const items = dedupeItems(parseFeed(body));
+    return { url, body, items };
+  };
+
+  // 1) Try the provided URL directly
+  let first = null;
+  try {
+    first = await tryFetchAndParse(inputUrl);
+    if (first.items.length) return first.items.slice(0, 100);
+  } catch (e) {
+    // keep error context but allow discovery attempts on original input URL
+    first = { error: e, url: inputUrl, body: '', items: [] };
+  }
+
+  // 2) If not a valid feed or empty, attempt discovery (from HTML page or common paths)
+  const baseForDiscovery = inputUrl;
+  const htmlForDiscovery = (first && typeof first.body === 'string' && first.body && !isLikelyFeed(first.body)) ? first.body : null;
+  let candidates = [];
+  if (htmlForDiscovery) {
+    candidates = discoverFeedUrls(htmlForDiscovery, baseForDiscovery);
+  } else {
+    // even if fetch failed or body looked like feed-but-empty, try common feed locations
+    candidates = discoverFeedUrls('', baseForDiscovery);
+  }
+  // avoid retrying same URL
+  candidates = candidates.filter(u => !tried.includes(u));
+
+  let lastErr = first && first.error ? first.error : null;
+  for (const cand of candidates.slice(0, 8)) {
+    try {
+      const r = await tryFetchAndParse(cand);
+      if (r.items.length) {
+        // remember discovered feed URL for future fetches
+        try {
+          const newCfg = { ...cfg, url: cand, discovered_from: inputUrl };
+          await pool.query('UPDATE sources SET config = $1 WHERE id = $2', [JSON.stringify(newCfg), source.id]);
+          source.config = JSON.stringify(newCfg);
+        } catch {}
+        return r.items.slice(0, 100);
+      }
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  if (first && first.error) {
+    throw new Error(`دریافت فید ناموفق بود: ${first.error.message || String(first.error)}`);
+  }
+  if (lastErr) {
+    throw new Error(`هیچ خبر قابل خواندنی در این آدرس/فید پیدا نشد. (${lastErr.message || String(lastErr)})`);
+  }
+  throw new Error('هیچ خبری در این منبع پیدا نشد. آدرس واردشده باید فید RSS/Atom معتبر باشد (یا صفحه‌ای که لینک فید داشته باشد).');
 }
 
 function dedupeItems(items) {
@@ -377,6 +483,9 @@ async function syncSource(source) {
         [source.id, source.name, source.type, item.title, item.link, item.published_at || t, t]
       );
       if (res.rowCount > 0) inserted += res.rowCount;
+    }
+    if (fetched === 0) {
+      error = 'هیچ خبری از این منبع دریافت نشد. آدرس/تنظیمات منبع را بررسی کنید.';
     }
   } catch (e) {
     error = e && e.message ? e.message : String(e);
@@ -595,10 +704,18 @@ async function handleApi(req, res, urlObj) {
         'INSERT INTO sources (type, name, config, enabled) VALUES ($1, $2, $3, TRUE) RETURNING *',
         [type, name, JSON.stringify(config)]
       );
-      const source = rows[0];
-      // initial fetch in background
-      syncSource(source).then(r => console.log('[fetch:new]', r)).catch(() => {});
-      return sendJson(res, 201, { source });
+      let source = rows[0];
+      // try initial fetch and return result so UI can show success/error immediately
+      let fetchResult = null;
+      try {
+        fetchResult = await syncSource(source);
+        // syncSource may update config (e.g. discovered feed URL)
+        source = await getSourceById(source.id) || source;
+        console.log('[fetch:new]', fetchResult);
+      } catch (e) {
+        fetchResult = { sourceId: source.id, name: source.name, fetched: 0, inserted: 0, ms: 0, error: e && e.message ? e.message : String(e) };
+      }
+      return sendJson(res, 201, { source, fetch: fetchResult });
     }
 
     if (method === 'DELETE' && pathname.startsWith('/api/sources/')) {

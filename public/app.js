@@ -543,19 +543,33 @@
       try {
         const btn = els.sourceForm.querySelector('button[type="submit"]');
         btn.disabled = true;
-        await api('/api/sources', { method: 'POST', body: JSON.stringify({ type, name, config }) });
+        setStatus('در حال افزودن منبع و دریافت خبرها...');
+        const res = await api('/api/sources', { method: 'POST', body: JSON.stringify({ type, name, config }) });
         els.sourceForm.reset();
         els.sourceType.value = type;
         updateSourceFormMeta();
-        showToast('منبع اضافه شد و دریافت خبرها آغاز شد.');
         await loadSources();
-        // news may arrive shortly after background fetch
-        setTimeout(() => { loadNews(); loadCounts(); }, 2500);
-        setTimeout(() => { loadNews(); loadCounts(); }, 7000);
+
+        const r = res && res.fetch;
+        if (r && r.error) {
+          if (r.fetched > 0) {
+            showToast(`منبع اضافه شد، اما خطا: ${r.error}`);
+          } else {
+            showToast(`منبع اضافه شد ولی خبری دریافت نشد: ${r.error}`);
+          }
+        } else if (r) {
+          showToast(`منبع اضافه شد: ${r.inserted || 0} خبر جدید (از ${r.fetched || 0} مورد)`);
+        } else {
+          showToast('منبع اضافه شد.');
+        }
+
+        await loadNews();
+        await loadCounts();
       } catch (err) {
         showToast(err.message || 'خطا در افزودن منبع');
       } finally {
-        els.sourceForm.querySelector('button[type="submit"]').disabled = false;
+        const btn = els.sourceForm.querySelector('button[type="submit"]');
+        if (btn) btn.disabled = false;
       }
     });
 
@@ -580,8 +594,13 @@
           setStatus('در حال دریافت خبر از این منبع...');
           const res = await api(`/api/sources/${id}/fetch`, { method: 'POST', body: '{}' });
           const r = res.result || {};
-          if (r.error) showToast('خطا در دریافت: ' + r.error);
-          else showToast(`دریافت انجام شد: ${r.inserted || 0} خبر جدید`);
+          if (r.error) {
+            if (r.fetched > 0) showToast(`دریافت با هشدار: ${r.error}`);
+            else showToast('خطا در دریافت: ' + r.error);
+          } else {
+            showToast(`دریافت انجام شد: ${r.inserted || 0} خبر جدید (از ${r.fetched || 0} مورد)`);
+          }
+          await loadSources();
           await loadNews();
           await loadCounts();
         }
