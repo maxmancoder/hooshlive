@@ -157,12 +157,25 @@ function contentType(filePath) {
 
 function serveStatic(req, res, pathname) {
   let rel = pathname === '/' ? '/index.html' : pathname;
-  const filePath = path.normalize(path.join(PUBLIC_DIR, rel));
+  if (rel === '/login' || rel === '/login/') rel = '/login.html';
+  let filePath = path.normalize(path.join(PUBLIC_DIR, rel));
   if (!filePath.startsWith(PUBLIC_DIR)) {
     sendText(res, 403, 'Forbidden');
     return true;
   }
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) return false;
+  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+    // try adding .html
+    if (!path.extname(filePath)) {
+      const htmlPath = filePath + '.html';
+      if (fs.existsSync(htmlPath) && !fs.statSync(htmlPath).isDirectory()) {
+        filePath = htmlPath;
+      } else {
+        return false;
+      }
+    } else {
+      return false;
+    }
+  }
   const data = fs.readFileSync(filePath);
   res.writeHead(200, { 'Content-Type': contentType(filePath) });
   res.end(data);

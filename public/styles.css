@@ -67,9 +67,7 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .brand h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
 .subtitle { margin: 2px 0 0; color: var(--text-secondary); font-size: 13px; }
 .topbar-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
-.user-control { display: inline-flex; align-items: center; gap: 6px; padding: 4px 6px; border: 1px solid var(--border); border-radius: 10px; background: #0a0a0a; }
-.user-label { font-size: 12px; color: var(--text-secondary); white-space: nowrap; }
-.user-input { width: 140px; padding: 6px 8px; border-radius: 8px; font-size: 12px; }
+#refreshBtn { position: sticky; top: 14px; z-index: 80; box-shadow: 0 12px 40px rgba(14, 165, 233, 0.25); backdrop-filter: blur(6px); }
 
 .panel {
   background: rgba(10,10,10,0.7);
@@ -101,6 +99,7 @@ input[type="text"], input[type="search"], select, textarea {
   color: var(--text);
   outline: none;
   transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+  color-scheme: dark;
 }
 input::placeholder, textarea::placeholder { color: var(--text-faint); }
 input:hover, select:hover, textarea:hover { border-color: var(--border-strong); }
@@ -109,7 +108,9 @@ input:focus, select:focus, textarea:focus {
   box-shadow: 0 0 0 3px rgba(255,255,255,0.04);
   background: #080808;
 }
-select { cursor: pointer; }
+select { cursor: pointer; appearance: none; -webkit-appearance: none; -moz-appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%23bfbfbf' d='M0 0l5 6 5-6z'/></svg>"); background-repeat: no-repeat; background-position: left 12px center; padding-left: 32px; }
+select option { background: #0f0f0f; color: var(--text); }
+select optgroup { background: #0f0f0f; color: var(--text-secondary); }
 textarea { resize: vertical; min-height: 90px; }
 .help { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
@@ -382,10 +383,9 @@ textarea { resize: vertical; min-height: 90px; }
 }
 @media (max-width: 720px) {
   .app-shell { padding: 16px 12px 28px; }
-  .topbar { flex-direction: column; align-items: stretch; }
+  .topbar { flex-direction: column; align-items: stretch; position: static; }
   .topbar-actions { justify-content: flex-start; }
-  .user-control { width: 100%; }
-  .user-input { flex: 1 1 auto; width: auto; }
+  #refreshBtn { position: fixed; bottom: 16px; left: 16px; right: auto; top: auto; z-index: 90; }
   .source-form { grid-template-columns: 1fr; }
   .field-wide { grid-column: auto; }
   .feed-header { flex-direction: column; align-items: stretch; }

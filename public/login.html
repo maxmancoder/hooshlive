@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ورود | hooshlive</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css" />
+  <style>
+    .login-wrap { max-width: 420px; margin: 80px auto; padding: 0 16px; }
+    .login-card { background: rgba(10,10,10,0.7); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 24px; backdrop-filter: blur(8px); display: flex; flex-direction: column; gap: 16px; }
+    .login-card h1 { margin: 0; font-size: 22px; }
+    .login-card p { margin: 0; color: var(--text-secondary); font-size: 14px; }
+    .login-form { display: flex; flex-direction: column; gap: 12px; }
+    .login-form label { font-size: 13px; color: var(--text-secondary); }
+    .login-form input { padding: 10px 12px; border-radius: 10px; }
+    .login-actions { display: flex; gap: 10px; justify-content: space-between; align-items: center; }
+  </style>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"></div>
+        <div>
+          <h1>hooshlive</h1>
+          <p class="subtitle">خبرخوان هوش مصنوعی و فناوری</p>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <a href="/" class="btn btn-secondary">بازگشت به صفحه اصلی</a>
+      </div>
+    </header>
+
+    <main class="login-wrap">
+      <section class="login-card">
+        <div>
+          <h1>ورود به حساب کاربری</h1>
+          <p>نام کاربری خود را وارد کنید تا وضعیت خوانده‌شده‌ها برای شما ذخیره شود.</p>
+        </div>
+        <form id="loginForm" class="login-form">
+          <div>
+            <label for="username">نام کاربری</label>
+            <input id="username" name="username" type="text" placeholder="مثال: علی" maxlength="50" required autocomplete="username" />
+          </div>
+          <div class="login-actions">
+            <button class="btn btn-primary" type="submit">ورود</button>
+            <a href="/" class="btn btn-secondary">انصراف</a>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    const USER_STORAGE_KEY = 'hooshlive_user_key';
+    const form = document.getElementById('loginForm');
+    const input = document.getElementById('username');
+    try {
+      const saved = (localStorage.getItem(USER_STORAGE_KEY) || '').trim();
+      if (saved) input.value = saved;
+    } catch {}
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const name = (input.value || '').trim().slice(0, 50);
+      if (!name) {
+        input.focus();
+        return;
+      }
+      try { localStorage.setItem(USER_STORAGE_KEY, name); } catch {}
+      window.location.href = '/';
+    });
+  </script>
+</body>
+</html>
