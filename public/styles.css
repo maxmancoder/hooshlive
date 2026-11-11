@@ -286,6 +286,29 @@ textarea { resize: vertical; min-height: 90px; }
   overflow: hidden;
   background: #050505;
 }
+.preview-notice {
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: #0b0b0b;
+  border-bottom: 1px solid var(--border);
+}
+.preview-notice:empty { display: none; }
+.preview-notice strong { color: var(--text); font-weight: 500; }
+.preview-notice .notice-actions { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+.preview-notice .notice-link-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border-strong);
+  background: #141414;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.preview-notice .notice-link-btn:hover { background: #1a1a1a; }
 .preview-frame-wrap iframe {
   display: block;
   width: 100%;
@@ -301,7 +324,7 @@ textarea { resize: vertical; min-height: 90px; }
   padding: 12px;
   background: #050505;
 }
-.preview-fallback { padding: 8px 10px; border-top: 1px solid var(--border); }
+.preview-fallback { padding: 8px 10px; border-top: 1px solid var(--border); background: #0b0b0b; }
 
 .folder-sources-list {
   display: grid;

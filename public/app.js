@@ -50,6 +50,7 @@
     previewCopy: document.getElementById('previewCopy'),
     previewFrame: document.getElementById('previewFrame'),
     previewEmbed: document.getElementById('previewEmbed'),
+    previewNotice: document.getElementById('previewNotice'),
   };
 
   const READ_STORAGE_KEY = 'hooshlive_read_news_v1';
@@ -534,8 +535,30 @@
     }
   }
 
+  function isLikelyFeedUrl(link) {
+    try {
+      const u = new URL(link);
+      const p = (u.pathname || '').toLowerCase();
+      const q = (u.search || '').toLowerCase();
+      if (/(\.xml|\.rss|\.atom)(\/?$)/.test(p)) return true;
+      if (/(\/feed(\/|$)|\/rss(\/|$)|\/atom(\/|$))/.test(p)) return true;
+      if (/[?&](feed|rss|format)=(rss|atom|xml)/.test(q)) return true;
+      return false;
+    } catch {
+      return /\.(xml|rss|atom)(\?|#|$)/i.test(String(link || ''));
+    }
+  }
+
+  function setPreviewNotice(html, show) {
+    if (!els.previewNotice) return;
+    els.previewNotice.innerHTML = html || '';
+    els.previewNotice.classList.toggle('hidden', !show || !html);
+  }
+
   function clearPreviewContent() {
     if (els.previewFrame) {
+      els.previewFrame.onload = null;
+      els.previewFrame.onerror = null;
       els.previewFrame.src = 'about:blank';
       els.previewFrame.classList.remove('hidden');
     }
@@ -543,6 +566,7 @@
       els.previewEmbed.innerHTML = '';
       els.previewEmbed.classList.add('hidden');
     }
+    setPreviewNotice('', false);
   }
 
   function openPreview(item) {
@@ -560,23 +584,48 @@
     clearPreviewContent();
 
     const tgPost = parseTelegramPost(item.link);
+    const feedLike = !tgPost && isLikelyFeedUrl(item.link);
+
     if (tgPost && els.previewEmbed) {
       // Render Telegram post via official widget (t.me pages block plain iframes)
       els.previewFrame.classList.add('hidden');
       els.previewEmbed.classList.remove('hidden');
+      setPreviewNotice('در حال بارگذاری پست تلگرام…', true);
       const script = document.createElement('script');
       script.async = true;
       script.src = 'https://telegram.org/js/telegram-widget.js?22';
       script.setAttribute('data-telegram-post', tgPost);
       script.setAttribute('data-width', '100%');
       script.setAttribute('data-dark', '1');
+      script.onload = () => setPreviewNotice('', false);
+      script.onerror = () => setPreviewNotice('نمایش پست تلگرام در اینجا ممکن نشد. از «باز کردن در تب جدید» استفاده کنید.', true);
       els.previewEmbed.appendChild(script);
+    } else if (feedLike) {
+      // RSS/XML feeds are not suitable for iframe preview in most browsers
+      els.previewFrame.classList.add('hidden');
+      if (els.previewEmbed) els.previewEmbed.classList.add('hidden');
+      setPreviewNotice(
+        '<strong>این لینک از نوع فید/RSS یا XML است</strong> و معمولاً در پیش‌نمایش داخل قاب به‌درستی نمایش داده نمی‌شود.<br>برای مشاهده محتوا از «باز کردن در تب جدید» استفاده کنید.',
+        true
+      );
     } else {
-      // Default: load in iframe. Some sites may block embedding (X-Frame-Options/CSP).
+      // Default: try loading in iframe. Many sites block embedding via X-Frame-Options/CSP.
       els.previewFrame.classList.remove('hidden');
       if (els.previewEmbed) els.previewEmbed.classList.add('hidden');
+      setPreviewNotice('در حال بارگذاری پیش‌نمایش… اگر صفحه سفید ماند، احتمالاً سایت نمایش در قاب را مسدود کرده است.', true);
+
       const link = item.link;
-      setTimeout(() => { if (currentPreviewLink === link) els.previewFrame.src = link; }, 0);
+      const onDone = (msg) => {
+        if (currentPreviewLink !== link) return;
+        setPreviewNotice(msg, true);
+      };
+      els.previewFrame.onload = () => onDone('اگر محتوا نمایش داده نشد (صفحه سفید/مسدود)، از «باز کردن در تب جدید» استفاده کنید.');
+      els.previewFrame.onerror = () => onDone('بارگذاری پیش‌نمایش ناموفق بود. از «باز کردن در تب جدید» استفاده کنید.');
+      setTimeout(() => {
+        if (currentPreviewLink === link) {
+          try { els.previewFrame.src = link; } catch { onDone('امکان بارگذاری این لینک در قاب وجود ندارد. از «باز کردن در تب جدید» استفاده کنید.'); }
+        }
+      }, 0);
     }
 
     els.previewBackdrop.classList.remove('hidden');
